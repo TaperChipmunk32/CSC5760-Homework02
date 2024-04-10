@@ -311,7 +311,7 @@ void update_domain(Domain &new_domain, Domain &old_domain, int world_rank, int w
     } // int j
 
     // work on the right column with the halo received from the process to the right.
-    for(int j = 0; j < new_domain.cols(); ++j)
+    for(int j = 0; j < new_domain.rows(); ++j)
     {
         int neighbor_count = 0;
 
