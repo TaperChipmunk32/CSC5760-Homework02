@@ -12,9 +12,9 @@ int main(int argc, char** argv) {
     int data_1 = rank + 1;
     int result_1;
 
-    MPI_Bcast(&data_1, 1, MPI_INT, 0, MPI_COMM_WORLD);
-
     MPI_Reduce(&data_1, &result_1, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
+
+    MPI_Bcast(&data_1, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
     if (rank == 0) {
         std::cout << "Result: " << result_1 << std::endl;
