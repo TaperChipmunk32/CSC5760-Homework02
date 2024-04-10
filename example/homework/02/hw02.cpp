@@ -122,7 +122,7 @@ void game_of_life(int world_rank, int world_size, int N, int P, int Q, int itera
 
     for(int i = 0; i < iterations; ++i)
     {
-        update_domain(*odd, *even, world_size, world_rank, p, q, P, Q);
+        update_domain(*odd, *even, world_size, world_rank);
         cout << "Iteration #" << i << endl; 
         print_domain(*odd, world_rank);
 
@@ -165,7 +165,7 @@ inline char update_the_cell(char cell, int neighbor_count)
 
 void update_domain(Domain &new_domain, Domain &old_domain, int world_rank, int world_size)
 {
-    MPI_Request request[4];
+    MPI_Request request[8];
     
     int m = new_domain.rows();
     int n = new_domain.cols();
@@ -175,23 +175,32 @@ void update_domain(Domain &new_domain, Domain &old_domain, int world_rank, int w
     // each iteration... for a test program, this is OK.
     char *top_row = new char[n];
     char *bottom_row = new char[n];
+    char *left_column = new char[m];
+    char *right_column = new char[m];
 
     char *top_halo = new char[n];
     char *bottom_halo = new char[n];
+    char *left_halo = new char[m];
+    char *right_halo = new char[m];
 
     const int top_row_index = 0; 
     const int bottom_row_index = m-1;
+    const int left_column_index = 0;
+    const int right_column_index = n-1;
 
     const int TOP_HALO = 0, BOTTOM_HALO = 1;
+    const int LEFT_HALO = 2, RIGHT_HALO = 3;
             // so order works with 1 process.
 
     // int MPI_Irecv(void *buf, int count, MPI_Datatype datatype, int source, int tag, MPI_Comm comm, MPI_Request *request)
 
-    // 1. post receives for the halo from top and bottom processes
+    // 1. post receives for the halosprocesses
     MPI_Irecv(top_halo, n, MPI_CHAR,    (world_rank+world_size-1)%world_size, TOP_HALO, MPI_COMM_WORLD, &request[2]);
     MPI_Irecv(bottom_halo, n, MPI_CHAR, (world_rank+1)%world_size, BOTTOM_HALO, MPI_COMM_WORLD, &request[3]);
+    MPI_Irecv(left_halo, m, MPI_CHAR,    (world_rank+world_size-1)%world_size, LEFT_HALO, MPI_COMM_WORLD, &request[4]);
+    MPI_Irecv(right_halo, m, MPI_CHAR, (world_rank+1)%world_size, RIGHT_HALO, MPI_COMM_WORLD, &request[5]);
 
-    // 2. gather+send my top row and bottom row to adjacent process
+    // 2. gather+send my edges to adjacent process
     for(int j = 0; j < n; ++j)   // fill the top row
     {
         top_row[j] = old_domain(top_row_index,j);
@@ -204,10 +213,21 @@ void update_domain(Domain &new_domain, Domain &old_domain, int world_rank, int w
     }
     MPI_Isend(bottom_row, n, MPI_CHAR, (world_rank+1)%world_size, TOP_HALO, MPI_COMM_WORLD, &request[1]);
 
-    // complete all 4 transfers
-    MPI_Waitall(4, request, MPI_STATUSES_IGNORE);
+    for(int j = 0; j < m; ++j)   // fill the left column
+    {
+        left_column[j] = old_domain(j, left_column_index);
+    }
+    MPI_Isend(left_column, m, MPI_CHAR, (world_rank-1+world_size)%world_size, RIGHT_HALO, MPI_COMM_WORLD, &request[6]);
+
+    for(int j = 0; j < m; ++j) // fill in the right column
+    {
+        right_column[j] = old_domain(j, right_column_index);
+    }
+    MPI_Isend(right_column, m, MPI_CHAR, (world_rank+1)%world_size, LEFT_HALO, MPI_COMM_WORLD, &request[7]);
+    // complete all 8 transfers
+    MPI_Waitall(8, request, MPI_STATUSES_IGNORE);
     
-    // at this point, I have halos from my top and bottom neighbor processes
+    // at this point, I have halos from my neighbor processes
 
     // work on the top row with the halo received from process above:
     for(int j = 0; j < n; ++j)
@@ -263,6 +283,60 @@ void update_domain(Domain &new_domain, Domain &old_domain, int world_rank, int w
         = update_the_cell(old_domain(bottom_row_index,j), neighbor_count);
     } // int j
 
+    // work on the left column with the halo received from process to the left:
+    for(int j = 0; j < n; ++j)
+    {
+        int neighbor_count = 0;
+
+        for(int delta_i = 0; delta_i <= 1; ++delta_i)
+        {
+        for(int delta_j = -1; delta_j <= 1; ++delta_j)
+        {
+        if(delta_i == 0 && delta_j == 0) //skip self
+            continue;
+
+        if(old_domain((left_column_index+delta_i),
+                (j+delta_j+old_domain.rows())%old_domain.rows()))
+            ++neighbor_count;
+        }
+        }
+        for(int delta_j = -1; delta_j <= 1; ++delta_j)
+        {
+            if(left_column[(j+delta_j+old_domain.rows())%old_domain.rows()])
+        ++neighbor_count;
+        }
+        
+        new_domain(j, left_column_index)
+        = update_the_cell(old_domain(j, left_column_index),neighbor_count);
+    } // int j
+
+    // work on the right column with the halo received from the process to the right.
+    for(int j = 0; j < new_domain.cols(); ++j)
+    {
+        int neighbor_count = 0;
+
+        for(int delta_i = -1; delta_i <= 0; ++delta_i)
+        {
+        for(int delta_j = -1; delta_j <= 1; ++delta_j)
+        {
+        if(delta_i == 0 && delta_j == 0) //skip self
+            continue;
+
+        if(old_domain((right_column_index+delta_i),
+                (j+delta_j+old_domain.rows())%old_domain.rows()))
+            ++neighbor_count;
+        }
+        }
+        for(int delta_j = -1; delta_j <= 1; ++delta_j)
+        {
+            if(right_halo[(j+delta_j+old_domain.rows())%old_domain.rows()])
+        ++neighbor_count;
+        }
+        
+        new_domain(right_column_index,j)
+        = update_the_cell(old_domain(j, right_column_index), neighbor_count);
+    } // int j
+
     // the interior of the domain updates as in sequential case:
     for(int i = (top_row_index+1); i < bottom_row_index ; ++i)
     {
@@ -285,10 +359,33 @@ void update_domain(Domain &new_domain, Domain &old_domain, int world_rank, int w
         } // int j
     } // int i
 
+    for(int i = (left_column_index+1); i < right_column_index ; ++i)
+    {
+        for(int j = 0; j < n; ++j)
+        {
+        int neighbor_count = 0;
+        for(int delta_i = -1; delta_i <= 1; ++delta_i)
+        {
+        for(int delta_j = -1; delta_j <= 1; ++delta_j)
+        {
+        if(delta_i == 0 && delta_j == 0) //skip self
+            continue;
+
+        if(old_domain((i+delta_i+old_domain.cols())%old_domain.cols(),
+                (j+delta_j+old_domain.rows())%old_domain.rows()))
+            ++neighbor_count;
+        }
+        }
+        new_domain(i,j) = update_the_cell(old_domain(i,j), neighbor_count);
+        } // int j
+    } // int i
+
     // remember, in a performant code, we would encapsulate the
     // dynamic memory allocation once level higher in the code...
     delete[] bottom_halo;
     delete[] top_halo;
-    delete[] bottom_row;
-    delete[] top_row;
+    delete[] right_halo;
+    delete[] left_halo;
+    delete[] right_column;
+    delete[] left_column;
 }
